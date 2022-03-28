@@ -1,0 +1,159 @@
+---
+title: "Weight Lifting Predictions"
+author: "Daniel"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(corrplot)
+```
+
+# Background
+
+Given data from motion sensors, can we predict whether a dumbbell exercise was performed or not? In this exercise we train machine learning models to attempt to do just that.
+
+## About the Data
+
+Six participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Based on this, our outcome variable is the class, which has five different values. The problem is thus a multiclass classification problem.
+
+The predictors are numerical data from various IMU (inertial measurement unit) systems positioned on the body and the dumbbells. These units consists of accelerometers, gyroscopes and magnetometers. The raw data are present as well as additional variables like maximum and minimum values.
+
+## Limitation of This Work
+
+The data are time series data, and are 10 repetitions of the five different ways (A-E). The data has been partitioned to aid in using this fact, but for this exercise we will completely ignore the time series aspect and treat each row as an time-independent observation.
+
+We will also ignore individual variations in this exercise.
+
+# Data Exploration and Feature Selection
+
+First we read the data files (using tidyverse libraries):
+```{r}
+train <- read_csv("../pml-training.csv")
+pred <- read_csv("../pml-testing.csv")
+```
+
+The dimensions are `r dim(train)` and `r dim(pred)`, respectively. Thus we have 160 variables.
+
+Some variable names:
+```{r}
+names(train)[1:30]
+```
+
+We will first look at missing values:
+```{r}
+sort(colMeans(is.na(train))*100, decreasing=T)
+```
+
+We see that many variables have mostly missing values (>97%) and we will ignore them:
+
+```{r}
+train <- train[,colMeans(is.na(train))<0.97]
+pred <- pred[,colMeans(is.na(pred))<0.97]
+```
+
+Doing this we have reduced the amount of variables from 160 to 60. Next we remove the first few variables which we don't need:
+
+```{r}
+train <- train[8:60]
+pred <- pred[8:60]
+```
+
+Now we look at variances:
+```{r}
+vars <- train %>% select(-classe) %>% summarise_all(var)
+barplot(height=unlist(vars))
+```
+
+We see that there are some variables with near-zero variance, which we remove. At the same time, we take out column 53, which is our outcome variable.
+```{r}
+x_train <- train[1:52]
+x_train <- x_train[,unlist(vars)>10]
+```
+
+Now we are left with 40 variables. Now for correlation analysis!
+
+```{r}
+corrplot(cor(x_train), method="shade")
+```
+
+The top correlating variables are:
+```{r}
+cor(x_train) %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  gather(var2, value, -var1) %>%
+  arrange(desc(value)) %>%
+  group_by(value) %>%
+  filter(row_number()==1)
+```
+
+We can see that sensors that are colocated are also highly correlated, which makes sense. Let's do a PCA:
+
+```{r}
+summary(prcomp(x_train))
+```
+
+We see that we would need the first 9 components to explain >95% of the variance.
+
+# Machine Learning
+
+We will first split the data:
+```{r}
+inTrain <- createDataPartition(y=train$classe, p=0.8, list=F)
+train <- train[inTrain,]
+test <- train[-inTrain,]
+```
+
+Set up training to use 5-fold cross-validation, then train models. 
+```{r}
+control <- trainControl(method="cv", number=5, verboseIter=F)
+mod_tree <- train(classe~., data=train, method="rpart", trControl=control)
+pred_tree <- predict(mod_tree, test)
+mod_rf <- train(classe~., data=train, method="rf", trControl=control)
+pred_rf <- predict(mod_rf, test)
+mod_svm <- train(classe~., data=train, method="svmPoly", trControl=control)
+pred_svm <- predict(mod_svm, test)
+```
+
+The models are:
+
+* CART
+* Random Forest
+* SVM with polynomial kernel
+
+Below are accuraty ratings for each model on the training set:
+
+* CART: 0.5
+* RF: 0.99
+* SVM: 0.99
+
+## Test Set and Out of Sample Error
+
+Below are detailed classification reports for the three models on the test set (the held-out portion of the training file).
+
+```{r}
+print(confusionMatrix(pred_tree, factor(test$classe)))
+print(confusionMatrix(pred_rf, factor(test$classe)))
+print(confusionMatrix(pred_svm, factor(test$classe)))
+```
+
+Summary:
+
+* CART: 0.495 accuracy (0.505 out-of-sample error)
+* RF: 0.9929 accuracy (0.0071 out-of-sample error)
+* SVM: 0.9924 accuracy (0.0076 out-of-sample error)
+
+Both random forest and SVM perform well, and I've chosen RF to predict with on the testing file.
+
+## Predicting on the test file
+
+```{r}
+predict(mod_rf, pred)
+```
+
